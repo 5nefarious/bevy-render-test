@@ -14,6 +14,7 @@ pub struct Renderer {
     queue: wgpu::Queue,
     swapchain_desc: wgpu::SwapChainDescriptor,
     swapchain: wgpu::SwapChain,
+    #[allow(dead_code)]
     shaders: wgpu::ShaderModule,
     render_pipeline: wgpu::RenderPipeline,
 }
