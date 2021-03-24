@@ -14,6 +14,7 @@ pub struct Renderer {
     queue: wgpu::Queue,
     swapchain_desc: wgpu::SwapChainDescriptor,
     swapchain: wgpu::SwapChain,
+    shaders: wgpu::ShaderModule,
     render_pipeline: wgpu::RenderPipeline,
 }
 
@@ -112,6 +113,7 @@ impl Renderer {
             queue,
             swapchain_desc: sc_desc,
             swapchain,
+            shaders,
             render_pipeline,
         }
     }
