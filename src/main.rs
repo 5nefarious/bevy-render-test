@@ -13,6 +13,12 @@ use render::RenderPlugin;
 
 fn main() {
     App::build()
+        .insert_resource(WindowDescriptor {
+            title: "Render Test".to_string(),
+            width: 640.0,
+            height: 480.0,
+            ..Default::default()
+        })
         .add_plugin(LogPlugin::default())
         .add_plugin(CorePlugin::default())
         .add_plugin(DiagnosticsPlugin::default())
