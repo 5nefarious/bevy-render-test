@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 bevy = { git = "https://github.com/bevyengine/bevy.git", rev = "42924d2" }
 futures = "0.3"
+image = "0.23"
 wgpu = "0.7"
 winit = "0.24"
 
