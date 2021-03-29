@@ -256,19 +256,24 @@ impl Renderer {
     }
 }
 
+#[derive(Default)]
+pub struct RenderSystemState {
+    resized_window_ids: HashSet<WindowId>,
+}
+
 pub fn render_system(
+    mut state: Local<RenderSystemState>,
     mut window_resized_events: EventReader<WindowResized>,
     windows: Res<Windows>,
     mut query: Query<&mut Renderer>,
 ) {
-    let mut resized_window_ids = HashSet::new();
     for event in window_resized_events.iter() {
-        resized_window_ids.insert(event.id);
+        state.resized_window_ids.insert(event.id);
     }
 
     for mut renderer in query.iter_mut() {
         let wid = renderer.window_id;
-        if resized_window_ids.contains(&wid) {
+        if state.resized_window_ids.take(&wid).is_some() {
             let window = windows
                 .get(wid)
                 .expect("Received resize event from nonexistent window");
