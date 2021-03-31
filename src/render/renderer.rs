@@ -2,11 +2,9 @@ use bevy::{
     prelude::*,
     window::{WindowId, WindowResized},
 };
-use image::{GenericImageView, io::Reader as ImageReader};
 use std::{
     borrow::Cow,
     collections::HashSet,
-    io::Cursor,
 };
 
 pub struct Renderer {
@@ -16,9 +14,9 @@ pub struct Renderer {
     queue: wgpu::Queue,
     swapchain_desc: wgpu::SwapChainDescriptor,
     swapchain: wgpu::SwapChain,
-    #[allow(dead_code)]
-    shaders: wgpu::ShaderModule,
-    bind_group: wgpu::BindGroup,
+    compute_bind_group: wgpu::BindGroup,
+    compute_pipeline: wgpu::ComputePipeline,
+    render_bind_group: wgpu::BindGroup,
     render_pipeline: wgpu::RenderPipeline,
 }
 
@@ -50,13 +48,16 @@ impl Renderer {
             .await
             .expect("Failed to create device");
 
-        let swapchain_format = adapter.get_swap_chain_preferred_format(&surface);
+        let swapchain_format = adapter
+            .get_swap_chain_preferred_format(&surface)
+            .expect("Failed to get preferred swapchain format");
         
+        let (width, height) = (window.physical_width(), window.physical_height());
         let sc_desc = wgpu::SwapChainDescriptor {
             usage: wgpu::TextureUsage::RENDER_ATTACHMENT,
             format: swapchain_format,
-            width: window.physical_width(),
-            height: window.physical_height(),
+            width,
+            height,
             present_mode: if window.vsync() {
                 wgpu::PresentMode::Mailbox
             } else {
@@ -66,6 +67,57 @@ impl Renderer {
 
         let swapchain = device.create_swap_chain(&surface, &sc_desc);
 
+        let texture_extent = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            size: texture_extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsage::SAMPLED
+                | wgpu::TextureUsage::STORAGE,
+            label: None,
+        });
+
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStage::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba32Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+            ],
+            label: None,
+        });
+        
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
         let mut flags = wgpu::ShaderFlags::VALIDATION;
         match adapter.get_info().backend {
             wgpu::Backend::Vulkan | wgpu::Backend::Metal => {
@@ -73,58 +125,26 @@ impl Renderer {
             }
             _ => {}
         }
-        let shaders = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+        let cs_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
             label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/compute.wgsl"))),
             flags,
         });
 
-        let image = ImageReader::new(Cursor::new(include_bytes!("logo.png")))
-            .with_guessed_format()
-            .expect("Failed to read image")
-            .decode()
-            .expect("Failed to decode image")
-            .flipv();
-        let (width, height) = image.dimensions();
-        let texels = image.as_bytes();
-        let texture_extent = wgpu::Extent3d {
-            width,
-            height,
-            depth: 1,
-        };
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            size: texture_extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsage::SAMPLED
-                | wgpu::TextureUsage::COPY_DST,
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: None,
+            layout: Some(&pipeline_layout),
+            module: &cs_module,
+            entry_point: "main",
         });
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        queue.write_texture(
-            wgpu::TextureCopyView {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-            },
-            texels,
-            wgpu::TextureDataLayout {
-                offset: 0,
-                bytes_per_row: 4 * width,
-                rows_per_image: 0,
-            },
-            texture_extent,
-        );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: None,
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
@@ -137,7 +157,7 @@ impl Renderer {
                     visibility: wgpu::ShaderStage::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
@@ -154,7 +174,7 @@ impl Renderer {
             ],
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -168,18 +188,17 @@ impl Renderer {
             ],
             label: None,
         });
-
-        // let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        //     label: None,
-        //     layout: None,
-        //     module: &shaders,
-        //     entry_point: "cs_main",
-        // });
         
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
+        });
+
+        let shaders = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/draw.wgsl"))),
+            flags,
         });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -207,8 +226,9 @@ impl Renderer {
             queue,
             swapchain_desc: sc_desc,
             swapchain,
-            shaders,
-            bind_group,
+            compute_bind_group,
+            compute_pipeline,
+            render_bind_group,
             render_pipeline,
         }
     }
@@ -220,25 +240,25 @@ impl Renderer {
     }
 
     pub fn update(&self) {
-        // let mut encoder = 
-        //     device.create_command_encoder(&wgpu::CommandEncoderDescriptor {label: None });
-        // {
-        //     let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, });
-        //     cpass.set_pipeline(&self.compute_pipeline);
-        //     cpass.dispatch(1, 1, 1);
-        // }
+        let sc_desc = &self.swapchain_desc;
+        let mut encoder = 
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {label: None });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, });
+            cpass.set_pipeline(&self.compute_pipeline);
+            cpass.set_bind_group(0, &self.compute_bind_group, &[]);
+            cpass.dispatch(sc_desc.width / 32 + 1, sc_desc.height / 32 + 1, 1);
+        }
 
         let frame = &self.swapchain
             .get_current_frame()
             .expect("Failed to get next view in swapchain")
             .output;
-        let mut encoder = 
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
-                color_attachments: &[wgpu::RenderPassColorAttachmentDescriptor {
-                    attachment: &frame.view,
+                color_attachments: &[wgpu::RenderPassColorAttachment {
+                    view: &frame.view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -248,7 +268,7 @@ impl Renderer {
                 depth_stencil_attachment: None,
             });
             rpass.set_pipeline(&self.render_pipeline);
-            rpass.set_bind_group(0, &self.bind_group, &[]);
+            rpass.set_bind_group(0, &self.render_bind_group, &[]);
             rpass.draw(0..3, 0..1);
         }
 
