@@ -13,7 +13,7 @@ pub struct Dispatcher {
 impl Dispatcher {
     pub fn new() -> Self {
         Dispatcher {
-            instance: wgpu::Instance::new(wgpu::BackendBit::PRIMARY),
+            instance: wgpu::Instance::new(wgpu::Backends::all()),
         }
     }
 
@@ -29,7 +29,7 @@ impl Dispatcher {
 pub fn dispatcher_system(
     mut window_created_events: EventReader<WindowCreated>,
     windows: Res<Windows>,
-    winit_windows: Res<WinitWindows>,
+    winit_windows: NonSend<WinitWindows>,
     dispatcher: Res<Dispatcher>,
     mut commands: Commands,
 ) {
@@ -44,7 +44,7 @@ pub fn dispatcher_system(
                 let renderer = block_on(
                     dispatcher.new_renderer(window, winit_window)
                 );
-                commands.spawn((renderer,));
+                commands.spawn().insert(renderer);
             },
             None => {},
         }

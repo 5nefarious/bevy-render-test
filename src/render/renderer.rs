@@ -2,18 +2,15 @@ use bevy::{
     prelude::*,
     window::{WindowId, WindowResized},
 };
-use std::{
-    borrow::Cow,
-    collections::HashSet,
-};
+use std::collections::HashSet;
 
+#[derive(Component)]
 pub struct Renderer {
     pub window_id: WindowId,
     surface: wgpu::Surface,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    swapchain_desc: wgpu::SwapChainDescriptor,
-    swapchain: wgpu::SwapChain,
+    config: wgpu::SurfaceConfiguration,
     compute_bind_group: wgpu::BindGroup,
     compute_pipeline: wgpu::ComputePipeline,
     render_bind_group: wgpu::BindGroup,
@@ -32,6 +29,7 @@ impl Renderer {
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
             })
             .await
             .expect("Failed to find an appropriate adapter");
@@ -41,31 +39,29 @@ impl Renderer {
                 &wgpu::DeviceDescriptor {
                     label: None,
                     features: wgpu::Features::empty(),
-                    limits: wgpu::Limits::default(),
+                    limits: wgpu::Limits::downlevel_defaults(),
                 },
                 None,
             )
             .await
             .expect("Failed to create device");
+        
+        let surface_formats = surface.get_supported_formats(&adapter);
+        assert!(surface_formats.len() > 0, "Surface format not supported by adapter");
 
-        let swapchain_format = adapter
-            .get_swap_chain_preferred_format(&surface)
-            .expect("Failed to get preferred swapchain format");
+        let surface_modes = surface.get_supported_modes(&adapter);
+        assert!(surface_modes.len() > 0, "Surface presentation mode not supported by adapter");
         
         let (width, height) = (window.physical_width(), window.physical_height());
-        let sc_desc = wgpu::SwapChainDescriptor {
-            usage: wgpu::TextureUsage::RENDER_ATTACHMENT,
-            format: swapchain_format,
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_formats[0],
             width,
             height,
-            present_mode: if window.vsync() {
-                wgpu::PresentMode::Mailbox
-            } else {
-                wgpu::PresentMode::Immediate
-            }
+            present_mode: surface_modes[0],
         };
 
-        let swapchain = device.create_swap_chain(&surface, &sc_desc);
+        surface.configure(&device, &config);
 
         let texture_extent = wgpu::Extent3d {
             width,
@@ -77,10 +73,10 @@ impl Renderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsage::SAMPLED
-                | wgpu::TextureUsage::STORAGE,
-            label: None,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            label: Some("Compute Framebuffer"),
         });
 
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -90,10 +86,10 @@ impl Renderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStage::COMPUTE,
+                    visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba32Float,
+                        format: wgpu::TextureFormat::Rgba16Float,
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
@@ -113,26 +109,18 @@ impl Renderer {
         });
         
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
+            label: Some("Compute Pipeline Layout"),
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
-        let mut flags = wgpu::ShaderFlags::VALIDATION;
-        match adapter.get_info().backend {
-            wgpu::Backend::Vulkan | wgpu::Backend::Metal => {
-                flags |= wgpu::ShaderFlags::EXPERIMENTAL_TRANSLATION;
-            }
-            _ => {}
-        }
-        let cs_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/compute.wgsl"))),
-            flags,
+        let cs_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Compute Shader Module"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/compute.wgsl").into()),
         });
 
         let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: None,
+            label: Some("Compute Pipeline"),
             layout: Some(&pipeline_layout),
             module: &cs_module,
             entry_point: "main",
@@ -154,7 +142,7 @@ impl Renderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStage::FRAGMENT,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
@@ -164,11 +152,8 @@ impl Renderer {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStage::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler {
-                        comparison: false,
-                        filtering: true,
-                    },
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                     count: None,
                 },
             ],
@@ -190,19 +175,18 @@ impl Renderer {
         });
         
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
+            label: Some("Render Pipeline Layout"),
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
-        let shaders = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/draw.wgsl"))),
-            flags,
+        let shaders = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Presentation Shader Module"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/draw.wgsl").into()),
         });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
+            label: Some("Render Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shaders,
@@ -212,11 +196,20 @@ impl Renderer {
             fragment: Some(wgpu::FragmentState {
                 module: &shaders,
                 entry_point: "fs_main",
-                targets: &[swapchain_format.into()],
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
         });
 
         Renderer {
@@ -224,8 +217,7 @@ impl Renderer {
             surface,
             device,
             queue,
-            swapchain_desc: sc_desc,
-            swapchain,
+            config,
             compute_bind_group,
             compute_pipeline,
             render_bind_group,
@@ -234,37 +226,44 @@ impl Renderer {
     }
 
     pub fn handle_resize(&mut self, window: &Window) {
-        self.swapchain_desc.width = window.physical_width();
-        self.swapchain_desc.height = window.physical_height();
-        self.swapchain = self.device.create_swap_chain(&self.surface, &self.swapchain_desc);
+        let width  = window.physical_width();
+        let height = window.physical_height();
+        if width > 0 && height > 0 {
+            self.config.width = width;
+            self.config.height = height;
+            self.surface.configure(&self.device, &self.config);
+        }
     }
 
     pub fn update(&self) {
-        let sc_desc = &self.swapchain_desc;
+        let config = &self.config;
         let mut encoder = 
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {label: None });
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
         {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, });
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
+            });
             cpass.set_pipeline(&self.compute_pipeline);
             cpass.set_bind_group(0, &self.compute_bind_group, &[]);
-            cpass.dispatch(sc_desc.width / 32 + 1, sc_desc.height / 32 + 1, 1);
+            cpass.dispatch_workgroups(config.width / 8 + 1, config.height / 8 + 1, 1);
         }
 
-        let frame = &self.swapchain
-            .get_current_frame()
-            .expect("Failed to get next view in swapchain")
-            .output;
+        let output = self.surface.get_current_texture()
+            .expect("Failed to get surface texture");
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: None,
-                color_attachments: &[wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
+                label: Some("Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: true,
                     },
-                }],
+                })],
                 depth_stencil_attachment: None,
             });
             rpass.set_pipeline(&self.render_pipeline);
@@ -272,7 +271,8 @@ impl Renderer {
             rpass.draw(0..3, 0..1);
         }
 
-        self.queue.submit(Some(encoder.finish()));
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
     }
 }
 

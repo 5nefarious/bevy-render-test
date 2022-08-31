@@ -12,7 +12,7 @@ use bevy::{
 use render::RenderPlugin;
 
 fn main() {
-    App::build()
+    App::new()
         .insert_resource(WindowDescriptor {
             title: "Render Test".to_string(),
             width: 640.0,
