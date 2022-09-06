@@ -4,65 +4,20 @@ use bevy::{
 };
 use std::collections::HashSet;
 
-#[derive(Component)]
-pub struct Renderer {
-    pub window_id: WindowId,
-    surface: wgpu::Surface,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
+pub struct RenderPipeline {
+    compute: wgpu::ComputePipeline,
+    render: wgpu::RenderPipeline,
     compute_bind_group: wgpu::BindGroup,
-    compute_pipeline: wgpu::ComputePipeline,
     render_bind_group: wgpu::BindGroup,
-    render_pipeline: wgpu::RenderPipeline,
 }
 
-impl Renderer {
-    pub async fn new(
-        instance: &wgpu::Instance,
-        window: &Window,
-        winit_window: &winit::window::Window,
+impl RenderPipeline {
+    pub fn new(
+        device: &wgpu::Device,
+        config: &wgpu::SurfaceConfiguration,
+        width: u32,
+        height: u32
     ) -> Self {
-        let window_id = window.id();
-        let surface = unsafe { instance.create_surface(winit_window) };
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .expect("Failed to find an appropriate adapter");
-
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    features: wgpu::Features::empty(),
-                    limits: wgpu::Limits::downlevel_defaults(),
-                },
-                None,
-            )
-            .await
-            .expect("Failed to create device");
-        
-        let surface_formats = surface.get_supported_formats(&adapter);
-        assert!(surface_formats.len() > 0, "Surface format not supported by adapter");
-
-        let surface_modes = surface.get_supported_modes(&adapter);
-        assert!(surface_modes.len() > 0, "Surface presentation mode not supported by adapter");
-        
-        let (width, height) = (window.physical_width(), window.physical_height());
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_formats[0],
-            width,
-            height,
-            present_mode: surface_modes[0],
-        };
-
-        surface.configure(&device, &config);
-
         let texture_extent = wgpu::Extent3d {
             width,
             height,
@@ -107,7 +62,7 @@ impl Renderer {
             ],
             label: None,
         });
-        
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Compute Pipeline Layout"),
             bind_group_layouts: &[&bind_group_layout],
@@ -212,16 +167,80 @@ impl Renderer {
             multiview: None,
         });
 
+        RenderPipeline {
+            compute: compute_pipeline,
+            render: render_pipeline,
+            compute_bind_group,
+            render_bind_group,
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct Renderer {
+    pub window_id: WindowId,
+    surface: wgpu::Surface,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    pipeline: RenderPipeline,
+}
+
+impl Renderer {
+    pub async fn new(
+        instance: &wgpu::Instance,
+        window: &Window,
+        winit_window: &winit::window::Window,
+    ) -> Self {
+        let window_id = window.id();
+        let surface = unsafe { instance.create_surface(winit_window) };
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("Failed to find an appropriate adapter");
+
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    features: wgpu::Features::empty(),
+                    limits: wgpu::Limits::default(),
+                },
+                None,
+            )
+            .await
+            .expect("Failed to create device");
+        
+        let surface_formats = surface.get_supported_formats(&adapter);
+        assert!(surface_formats.len() > 0, "Surface format not supported by adapter");
+
+        let surface_modes = surface.get_supported_modes(&adapter);
+        assert!(surface_modes.len() > 0, "Surface presentation mode not supported by adapter");
+        
+        let (width, height) = (window.physical_width(), window.physical_height());
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_formats[0],
+            width,
+            height,
+            present_mode: surface_modes[0],
+        };
+
+        surface.configure(&device, &config);
+
+        let pipeline = RenderPipeline::new(&device, &config, width, height);
+
         Renderer {
             window_id,
             surface,
             device,
             queue,
             config,
-            compute_bind_group,
-            compute_pipeline,
-            render_bind_group,
-            render_pipeline,
+            pipeline,
         }
     }
 
@@ -232,11 +251,13 @@ impl Renderer {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
+            self.pipeline = RenderPipeline::new(&self.device, &self.config, width, height);
         }
     }
 
     pub fn update(&self) {
         let config = &self.config;
+        let pipeline = &self.pipeline;
         let mut encoder = 
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
@@ -245,8 +266,8 @@ impl Renderer {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compute Pass"),
             });
-            cpass.set_pipeline(&self.compute_pipeline);
-            cpass.set_bind_group(0, &self.compute_bind_group, &[]);
+            cpass.set_pipeline(&pipeline.compute);
+            cpass.set_bind_group(0, &pipeline.compute_bind_group, &[]);
             cpass.dispatch_workgroups(config.width / 8 + 1, config.height / 8 + 1, 1);
         }
 
@@ -266,8 +287,8 @@ impl Renderer {
                 })],
                 depth_stencil_attachment: None,
             });
-            rpass.set_pipeline(&self.render_pipeline);
-            rpass.set_bind_group(0, &self.render_bind_group, &[]);
+            rpass.set_pipeline(&pipeline.render);
+            rpass.set_bind_group(0, &pipeline.render_bind_group, &[]);
             rpass.draw(0..3, 0..1);
         }
 
