@@ -7,6 +7,7 @@ var<private> max_iter: i32 = 20;
 var<private> tol: f32 = 0.00001;
 
 @group(0) @binding(0)
+var r_texels: texture_storage_2d<rgba8unorm, write>;
 
 fn sphere_sdf(p: vec3<f32>, c: vec3<f32>, r: f32) -> f32 {
     return distance(p, c) - r;
