@@ -2,7 +2,6 @@ use super::renderer::*;
 use bevy::{
     prelude::*,
     window::WindowCreated,
-    winit::WinitWindows,
 };
 use futures::executor::block_on;
 
@@ -20,16 +19,16 @@ impl Dispatcher {
     pub async fn new_renderer(
         &self,
         window: &Window,
-        winit_window: &winit::window::Window
     ) -> Renderer {
-        Renderer::new(&self.instance, window, winit_window).await
+        let window_id = window.id();
+        eprintln!("Spawning new renderer for window {window_id}");
+        Renderer::new(&self.instance, window).await
     }
 }
 
 pub fn dispatcher_system(
     mut window_created_events: EventReader<WindowCreated>,
-    windows: Res<Windows>,
-    winit_windows: NonSend<WinitWindows>,
+    windows: NonSend<Windows>,
     dispatcher: Res<Dispatcher>,
     mut commands: Commands,
 ) {
@@ -37,16 +36,9 @@ pub fn dispatcher_system(
         let window = windows
             .get(event.id)
             .expect("Received event from nonexistent window");
-        match winit_windows
-            .get_window(event.id)
-        {
-            Some(winit_window) => {
-                let renderer = block_on(
-                    dispatcher.new_renderer(window, winit_window)
-                );
-                commands.spawn().insert(renderer);
-            },
-            None => {},
-        }
+        let renderer = block_on(
+            dispatcher.new_renderer(window)
+        );
+        commands.spawn().insert(renderer);
     }
 }
