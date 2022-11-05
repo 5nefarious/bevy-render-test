@@ -13,8 +13,7 @@ use std::{
 #[repr(C, align(8))]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 struct RaySamplingUniform {
-    seed: u32,
-    pad: u32,   // Whyyyyyyyy?
+    seed: [u32; 2],
     extent: [u32; 2],
 }
 
@@ -26,6 +25,7 @@ pub struct RenderPipeline {
     sampler: wgpu::Sampler,
     sampling_uniform: RaySamplingUniform,
     sampling_buffer: wgpu::Buffer,
+    raybuffer: wgpu::Texture,
     start: Instant,
 }
 
@@ -39,10 +39,11 @@ impl RenderPipeline {
         let start = Instant::now();
 
         let raybuffer = RenderPipeline::create_raybuffer(device, width, height);
+        let raybuffer_view = raybuffer.create_view(&wgpu::TextureViewDescriptor::default());
 
+        let duration = start.elapsed();
         let sampling_uniform = RaySamplingUniform {
-            seed: start.elapsed().subsec_nanos(),
-            pad: 0,
+            seed: [duration.subsec_micros(), duration.subsec_nanos()],
             extent: [width, height],
         };
 
@@ -81,7 +82,7 @@ impl RenderPipeline {
         let compute_bind_group = RenderPipeline::create_compute_bindgroup(
             device,
             &compute_bind_group_layout,
-            &raybuffer,
+            &raybuffer_view,
             &sampling_buffer,
         );
 
@@ -139,7 +140,7 @@ impl RenderPipeline {
         let render_bind_group = RenderPipeline::create_render_bindgroup(
             device,
             &render_bind_group_layout,
-            &raybuffer,
+            &raybuffer_view,
             &sampler,
         );
         
@@ -189,6 +190,7 @@ impl RenderPipeline {
             sampler,
             sampling_uniform,
             sampling_buffer,
+            raybuffer,
             start,
         }
     }
@@ -196,35 +198,37 @@ impl RenderPipeline {
     pub fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) {
         let extent = &self.sampling_uniform.extent;
         if extent[0] != width || extent[1] != height {
-            let raybuffer = RenderPipeline::create_raybuffer(device, width, height);
+            self.raybuffer = RenderPipeline::create_raybuffer(device, width, height);
+            let view = self.raybuffer.create_view(&wgpu::TextureViewDescriptor::default());
 
             self.compute_bind_group = RenderPipeline::create_compute_bindgroup(
                 device,
                 &self.compute.get_bind_group_layout(0),
-                &raybuffer,
+                &view,
                 &self.sampling_buffer,
             );
 
             self.render_bind_group = RenderPipeline::create_render_bindgroup(
                 device,
                 &self.render.get_bind_group_layout(0),
-                &raybuffer,
+                &view,
                 &self.sampler,
             );
 
             self.sampling_uniform.extent = [width, height];
         }
-        self.sampling_uniform.seed = self.start.elapsed().subsec_nanos();
+        let duration = self.start.elapsed();
+        self.sampling_uniform.seed = [duration.subsec_micros(), duration.subsec_nanos()];
         queue.write_buffer(&self.sampling_buffer, 0, bytemuck::cast_slice(&[self.sampling_uniform]));
     }
 
-    fn create_raybuffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+    fn create_raybuffer(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
         let texture_extent = wgpu::Extent3d {
             width,
             height,
             depth_or_array_layers: 1,
         };
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
+        device.create_texture(&wgpu::TextureDescriptor {
             size: texture_extent,
             mip_level_count: 1,
             sample_count: 1,
@@ -233,9 +237,7 @@ impl RenderPipeline {
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::TEXTURE_BINDING,
             label: Some("Compute Framebuffer"),
-        });
-
-        texture.create_view(&wgpu::TextureViewDescriptor::default())
+        })
     }
 
     fn create_compute_bindgroup(
@@ -316,7 +318,7 @@ impl Renderer {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    features: wgpu::Features::empty(),
+                    features: wgpu::Features::CLEAR_TEXTURE,
                     limits: wgpu::Limits::default(),
                 },
                 None,
@@ -391,13 +393,14 @@ impl Renderer {
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
+        encoder.clear_texture(&pipeline.raybuffer, &wgpu::ImageSubresourceRange::default());
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compute Pass"),
             });
             cpass.set_pipeline(&pipeline.compute);
             cpass.set_bind_group(0, &pipeline.compute_bind_group, &[]);
-            cpass.dispatch_workgroups(config.width / 16 + 1, config.height / 16 + 1, 1);
+            cpass.dispatch_workgroups(config.width / 8 + 1, config.height / 8 + 1, 1);
         }
 
         let output = self.surface.get_current_texture()
