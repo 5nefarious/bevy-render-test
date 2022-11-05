@@ -56,6 +56,27 @@ fn uniform2d(key: vec2<u32>) -> vec2<f32> {
     );
 }
 
+fn get_initial_direction(
+    frame_coord: vec2<f32>,
+    frame_extent: vec2<f32>,
+) -> vec3<f32> {
+    let phi = atan2(frame_extent.y, frame_extent.x);
+    let diag_dst = camera_size * tan(radians(camera_fov));
+    let top_left = vec3<f32>(
+        diag_dst / 2.0 * -cos(phi),
+        diag_dst / 2.0 *  sin(phi),
+        camera_pos.z - camera_size,
+    );
+    let diag_pxl = distance(frame_extent, vec2<f32>());
+    let pxl2dst = diag_dst / diag_pxl;
+    let pixel_pos = top_left + pxl2dst * vec3<f32>(
+         frame_coord.x,
+        -frame_coord.y,
+         0.0,
+    );
+    return normalize(pixel_pos - camera_pos);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn main(
     @builtin(global_invocation_id) global_id: vec3<u32>,
@@ -73,21 +94,7 @@ fn main(
 
     var color = color_bg;
     var pos = camera_pos;
-    let phi = atan2(extent.y, extent.x);
-    let diag_dst = camera_size * tan(radians(camera_fov));
-    let top_left = vec3<f32>(
-        diag_dst / 2.0 * -cos(phi),
-        diag_dst / 2.0 *  sin(phi),
-        camera_pos.z - camera_size,
-    );
-    let diag_pxl = distance(extent, vec2<f32>());
-    let pxl2dst = diag_dst / diag_pxl;
-    let pixel_pos = top_left + pxl2dst * vec3<f32>(
-         global_pos.x,
-        -global_pos.y,
-         0.0,
-    );
-    let dir = normalize(pixel_pos - camera_pos);
+    let dir = get_initial_direction(global_pos, extent);
     for (var i = 0; i < max_iter; i++) {
         let dist = sphere_sdf(pos, sphere_center, sphere_radius);
         if (dist < tol) {
