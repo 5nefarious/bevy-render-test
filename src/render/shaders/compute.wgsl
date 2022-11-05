@@ -35,13 +35,12 @@ var<private> sphere_radius: f32 = 1.0;
 fn pcg2d(key: vec2<u32>) -> vec2<u32> {
     let a = 1664525u;
     let b = 1013904223u;
+    let c = vec2<u32>(16u, 16u);
     var v = key * a + b;
-    v.x += v.y * a;
-    v.y += v.x * a;
-    v ^= (v >> vec2<u32>(16u, 16u));
-    v.x += v.y * a;
-    v.y += v.x * a;
-    v ^= (v >> vec2<u32>(16u, 16u));
+    v += v.yx * a;
+    v ^= (v >> c);
+    v += v.yx * a;
+    v ^= (v >> c);
     return v;
 }
 
